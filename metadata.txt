@@ -1,0 +1,6 @@
+[general]
+name=Create Project
+description=QGIS Server plugin: creates a QGIS project from pre-downloaded job files
+version=0.1.0
+qgisMinimumVersion=3.28
+server=True

@@ -1,0 +1,20 @@
+{
+  "name": "QGIS Plugin Dev",
+  "build": { "dockerfile": "Dockerfile" },
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspaces/create_project,type=bind",
+  "workspaceFolder": "/workspaces/create_project",
+  "remoteEnv": {
+    "QT_QPA_PLATFORM": "offscreen",
+    "PYTHONPATH": "/workspaces"
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": ["ms-python.python", "ms-python.pylance"],
+      "settings": {
+        "python.testing.pytestEnabled": true,
+        "python.testing.pytestArgs": ["tests"],
+        "python.defaultInterpreterPath": "/usr/bin/python3"
+      }
+    }
+  }
+}
