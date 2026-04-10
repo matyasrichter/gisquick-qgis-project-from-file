@@ -1,5 +1,5 @@
 [project]
-name = "create-project"
+name = "gisquick-project-from-file"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"

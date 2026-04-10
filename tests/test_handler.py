@@ -1,4 +1,4 @@
-"""Integration tests for CreateProjectHandler using a real QGIS installation.
+"""Integration tests for GisquickProjectFromFileHandler using a real QGIS installation.
 
 _load_layers() and the full handleRequest() flow are exercised against the
 real QgsVectorLayer / QgsRasterLayer / QgsProject C++ objects provided by
@@ -19,7 +19,7 @@ import pytest
 from qgis.core import QgsWkbTypes
 from qgis.server import QgsServerRequest
 
-from create_project.create_project_handler import CreateProjectHandler
+from gisquick_project_from_file.gisquick_project_from_file_handler import GisquickProjectFromFileHandler
 
 
 # ---------------------------------------------------------------------------
@@ -270,8 +270,8 @@ def _make_context(method="POST", auth_header=None, body=None, request_is_none=Fa
 
 
 def _make_handler(secret=SECRET):
-    with patch.dict(os.environ, {"CREATE_PROJECT_SHARED_SECRET": secret}):
-        return CreateProjectHandler()
+    with patch.dict(os.environ, {"GISQUICK_PROJECT_FROM_FILE_SHARED_SECRET": secret}):
+        return GisquickProjectFromFileHandler()
 
 
 def _status(ctx) -> int:
@@ -293,7 +293,7 @@ class TestLoadLayers:
     def test_geojson_linestring_is_valid_vector_layer(self, tmp_path):
         (tmp_path / "track.geojson").write_text(LINESTRING_GEOJSON, encoding="utf-8")
 
-        layers = CreateProjectHandler._load_layers(tmp_path, [{"path": "track.geojson"}])
+        layers = GisquickProjectFromFileHandler._load_layers(tmp_path, [{"path": "track.geojson"}])
 
         assert len(layers) == 1
         assert layers[0].isValid()
@@ -302,7 +302,7 @@ class TestLoadLayers:
     def test_geojson_linestring_has_correct_feature_count(self, tmp_path):
         (tmp_path / "track.geojson").write_text(LINESTRING_GEOJSON, encoding="utf-8")
 
-        layers = CreateProjectHandler._load_layers(tmp_path, [{"path": "track.geojson"}])
+        layers = GisquickProjectFromFileHandler._load_layers(tmp_path, [{"path": "track.geojson"}])
 
         assert layers[0].featureCount() == 1
 
@@ -311,7 +311,7 @@ class TestLoadLayers:
     def test_json_extension_loads_vector_layer(self, tmp_path):
         (tmp_path / "pt.json").write_text(POINT_GEOJSON, encoding="utf-8")
 
-        layers = CreateProjectHandler._load_layers(tmp_path, [{"path": "pt.json"}])
+        layers = GisquickProjectFromFileHandler._load_layers(tmp_path, [{"path": "pt.json"}])
 
         assert len(layers) == 1
         assert layers[0].isValid()
@@ -322,7 +322,7 @@ class TestLoadLayers:
     def test_json_features_array_loads_as_valid_vector_layer(self, tmp_path):
         (tmp_path / "features.json").write_text(POLYGON_FEATURES_ARRAY_JSON, encoding="utf-8")
 
-        layers = CreateProjectHandler._load_layers(tmp_path, [{"path": "features.json"}])
+        layers = GisquickProjectFromFileHandler._load_layers(tmp_path, [{"path": "features.json"}])
 
         assert len(layers) == 1
         assert layers[0].isValid()
@@ -330,14 +330,14 @@ class TestLoadLayers:
     def test_json_features_array_has_polygon_geometry(self, tmp_path):
         (tmp_path / "features.json").write_text(POLYGON_FEATURES_ARRAY_JSON, encoding="utf-8")
 
-        layers = CreateProjectHandler._load_layers(tmp_path, [{"path": "features.json"}])
+        layers = GisquickProjectFromFileHandler._load_layers(tmp_path, [{"path": "features.json"}])
 
         assert layers[0].geometryType() == QgsWkbTypes.PolygonGeometry
 
     def test_json_features_array_has_correct_feature_count(self, tmp_path):
         (tmp_path / "features.json").write_text(POLYGON_FEATURES_ARRAY_JSON, encoding="utf-8")
 
-        layers = CreateProjectHandler._load_layers(tmp_path, [{"path": "features.json"}])
+        layers = GisquickProjectFromFileHandler._load_layers(tmp_path, [{"path": "features.json"}])
 
         assert layers[0].featureCount() == 1
 
@@ -346,7 +346,7 @@ class TestLoadLayers:
     def test_png_extension_loads_raster_layer(self, tmp_path):
         _write_minimal_png(tmp_path / "image.png")
 
-        layers = CreateProjectHandler._load_layers(tmp_path, [{"path": "image.png"}])
+        layers = GisquickProjectFromFileHandler._load_layers(tmp_path, [{"path": "image.png"}])
 
         assert len(layers) == 1
         assert layers[0].isValid()
@@ -357,26 +357,26 @@ class TestLoadLayers:
         """A .geojson file with garbage content must not be added (isValid → False)."""
         (tmp_path / "bad.geojson").write_bytes(b"\x00\x01\x02CORRUPT")
 
-        layers = CreateProjectHandler._load_layers(tmp_path, [{"path": "bad.geojson"}])
+        layers = GisquickProjectFromFileHandler._load_layers(tmp_path, [{"path": "bad.geojson"}])
 
         assert layers == []
 
     # --- path traversal / separator rejection (no QGIS I/O needed) ---
 
     def test_path_with_forward_slash_rejected(self, tmp_path):
-        layers = CreateProjectHandler._load_layers(
+        layers = GisquickProjectFromFileHandler._load_layers(
             tmp_path, [{"path": "subdir/data.geojson"}]
         )
         assert layers == []
 
     def test_path_with_backslash_rejected(self, tmp_path):
-        layers = CreateProjectHandler._load_layers(
+        layers = GisquickProjectFromFileHandler._load_layers(
             tmp_path, [{"path": "sub\\data.geojson"}]
         )
         assert layers == []
 
     def test_path_with_dotdot_rejected(self, tmp_path):
-        layers = CreateProjectHandler._load_layers(
+        layers = GisquickProjectFromFileHandler._load_layers(
             tmp_path, [{"path": "..secret.geojson"}]
         )
         assert layers == []
@@ -384,17 +384,17 @@ class TestLoadLayers:
     # --- missing / malformed entries ---
 
     def test_nonexistent_file_skipped(self, tmp_path):
-        layers = CreateProjectHandler._load_layers(
+        layers = GisquickProjectFromFileHandler._load_layers(
             tmp_path, [{"path": "ghost.geojson"}]
         )
         assert layers == []
 
     def test_non_dict_entry_skipped(self, tmp_path):
-        layers = CreateProjectHandler._load_layers(tmp_path, ["not_a_dict"])
+        layers = GisquickProjectFromFileHandler._load_layers(tmp_path, ["not_a_dict"])
         assert layers == []
 
     def test_empty_files_list_returns_empty(self, tmp_path):
-        layers = CreateProjectHandler._load_layers(tmp_path, [])
+        layers = GisquickProjectFromFileHandler._load_layers(tmp_path, [])
         assert layers == []
 
     # --- unknown extension: OGR auto-detection ---
@@ -403,7 +403,7 @@ class TestLoadLayers:
         """OGR sniffs file content, so a .xyz file containing valid GeoJSON loads."""
         (tmp_path / "data.xyz").write_text(LINESTRING_GEOJSON, encoding="utf-8")
 
-        layers = CreateProjectHandler._load_layers(tmp_path, [{"path": "data.xyz"}])
+        layers = GisquickProjectFromFileHandler._load_layers(tmp_path, [{"path": "data.xyz"}])
 
         assert len(layers) == 1
         assert layers[0].isValid()
@@ -412,7 +412,7 @@ class TestLoadLayers:
         """A PNG renamed to .xyz: OGR rejects it → GDAL opens it as raster."""
         _write_minimal_png(tmp_path / "data.xyz")
 
-        layers = CreateProjectHandler._load_layers(tmp_path, [{"path": "data.xyz"}])
+        layers = GisquickProjectFromFileHandler._load_layers(tmp_path, [{"path": "data.xyz"}])
 
         assert len(layers) == 1
         assert layers[0].isValid()
@@ -420,7 +420,7 @@ class TestLoadLayers:
     def test_unknown_ext_with_garbage_content_skipped(self, tmp_path):
         (tmp_path / "data.xyz").write_bytes(b"\x00\x01GARBAGE")
 
-        layers = CreateProjectHandler._load_layers(tmp_path, [{"path": "data.xyz"}])
+        layers = GisquickProjectFromFileHandler._load_layers(tmp_path, [{"path": "data.xyz"}])
 
         assert layers == []
 
@@ -430,7 +430,7 @@ class TestLoadLayers:
         """MIME type routes to QgsVectorLayer even when extension is unknown."""
         (tmp_path / "data.bin").write_text(LINESTRING_GEOJSON, encoding="utf-8")
 
-        layers = CreateProjectHandler._load_layers(
+        layers = GisquickProjectFromFileHandler._load_layers(
             tmp_path, [{"path": "data.bin", "type": "application/geo+json"}]
         )
 
@@ -443,7 +443,7 @@ class TestLoadLayers:
         (tmp_path / "track.geojson").write_text(LINESTRING_GEOJSON, encoding="utf-8")
         _write_minimal_png(tmp_path / "image.png")
 
-        layers = CreateProjectHandler._load_layers(
+        layers = GisquickProjectFromFileHandler._load_layers(
             tmp_path,
             [{"path": "track.geojson"}, {"path": "image.png"}],
         )

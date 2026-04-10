@@ -12,7 +12,7 @@ wheels = [
 ]
 
 [[package]]
-name = "create-project"
+name = "gisquick-project-from-file"
 version = "0.1.0"
 source = { virtual = "." }
 

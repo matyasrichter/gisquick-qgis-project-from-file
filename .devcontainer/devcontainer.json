@@ -1,8 +1,8 @@
 {
   "name": "QGIS Plugin Dev",
   "build": { "dockerfile": "Dockerfile" },
-  "workspaceMount": "source=${localWorkspaceFolder},target=/workspaces/create_project,type=bind",
-  "workspaceFolder": "/workspaces/create_project",
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspaces/gisquick_project_from_file,type=bind",
+  "workspaceFolder": "/workspaces/gisquick_project_from_file",
   "remoteEnv": {
     "QT_QPA_PLATFORM": "offscreen",
     "PYTHONPATH": "/workspaces"

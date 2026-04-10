@@ -1,4 +1,4 @@
-"""Tests for pure-logic helper functions in create_project_handler.py.
+"""Tests for pure-logic helper functions in gisquick_project_from_file_handler.py.
 
 These functions contain no QGIS layer or project I/O — they are tested
 with plain pytest and standard library mocks only.
@@ -11,9 +11,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from create_project.config import CreateProjectConfig, load_config
-from create_project.create_project_handler import (
-    CreateProjectHandler,
+from gisquick_project_from_file.config import GisquickProjectFromFileConfig, load_config
+from gisquick_project_from_file.gisquick_project_from_file_handler import (
+    GisquickProjectFromFileHandler,
     _extract_bearer_token,
     _get_header,
     _media_kind,
@@ -150,18 +150,18 @@ class TestExtractBearerToken:
 class TestLoadConfig:
 
     def test_returns_config_with_secret(self):
-        with patch.dict(os.environ, {"CREATE_PROJECT_SHARED_SECRET": "supersecret"}):
+        with patch.dict(os.environ, {"GISQUICK_PROJECT_FROM_FILE_SHARED_SECRET": "supersecret"}):
             cfg = load_config()
-        assert isinstance(cfg, CreateProjectConfig)
+        assert isinstance(cfg, GisquickProjectFromFileConfig)
         assert cfg.shared_secret == "supersecret"
 
     def test_strips_whitespace(self):
-        with patch.dict(os.environ, {"CREATE_PROJECT_SHARED_SECRET": "  s3cr3t  "}):
+        with patch.dict(os.environ, {"GISQUICK_PROJECT_FROM_FILE_SHARED_SECRET": "  s3cr3t  "}):
             cfg = load_config()
         assert cfg.shared_secret == "s3cr3t"
 
     def test_returns_empty_string_when_env_unset(self):
-        env = {k: v for k, v in os.environ.items() if k != "CREATE_PROJECT_SHARED_SECRET"}
+        env = {k: v for k, v in os.environ.items() if k != "GISQUICK_PROJECT_FROM_FILE_SHARED_SECRET"}
         with patch.dict(os.environ, env, clear=True):
             cfg = load_config()
         assert cfg.shared_secret == ""
@@ -180,24 +180,24 @@ class TestReadJsonPayload:
 
     def test_valid_json(self):
         payload = {"job_dir": "/tmp/job", "files": []}
-        result = CreateProjectHandler._read_json_payload(self._req(json.dumps(payload).encode()))
+        result = GisquickProjectFromFileHandler._read_json_payload(self._req(json.dumps(payload).encode()))
         assert result == payload
 
     def test_none_body_raises(self):
         with pytest.raises(ValueError):
-            CreateProjectHandler._read_json_payload(self._req(None))
+            GisquickProjectFromFileHandler._read_json_payload(self._req(None))
 
     def test_empty_body_raises(self):
         with pytest.raises(ValueError):
-            CreateProjectHandler._read_json_payload(self._req(b""))
+            GisquickProjectFromFileHandler._read_json_payload(self._req(b""))
 
     def test_invalid_json_raises(self):
         with pytest.raises(ValueError):
-            CreateProjectHandler._read_json_payload(self._req(b"{not valid json}"))
+            GisquickProjectFromFileHandler._read_json_payload(self._req(b"{not valid json}"))
 
     def test_unicode_json(self):
         payload = {"name": "\u00e9l\u00e8ve"}
-        result = CreateProjectHandler._read_json_payload(
+        result = GisquickProjectFromFileHandler._read_json_payload(
             self._req(json.dumps(payload).encode("utf-8"))
         )
         assert result["name"] == "\u00e9l\u00e8ve"

@@ -56,20 +56,20 @@ def _extract_bearer_token(request: Any) -> str:
     return ""
 
 
-class CreateProjectHandler(QgsServerOgcApiHandler):
+class GisquickProjectFromFileHandler(QgsServerOgcApiHandler):
 
     def __init__(self):
         super().__init__()
         self._config = load_config()
 
     def path(self):
-        return QRegularExpression(r"^(?:/create-project)?/?$")
+        return QRegularExpression(r"^(?:/gisquick-project-from-file)?/?$")
 
     def operationId(self):
-        return "createProject"
+        return "gisquickProjectFromFile"
 
     def summary(self):
-        return "Create a QGIS project from pre-downloaded job files"
+        return "Gisquick - Create a QGIS project from pre-downloaded job files"
 
     def description(self):
         return (
@@ -78,7 +78,7 @@ class CreateProjectHandler(QgsServerOgcApiHandler):
         )
 
     def linkTitle(self):
-        return "Create project"
+        return "Gisquick - Project from file"
 
     def linkType(self):
         return QgsServerOgcApi.data
@@ -138,7 +138,7 @@ class CreateProjectHandler(QgsServerOgcApiHandler):
             return
         expected = self._config.shared_secret
         if not expected:
-            self._write_json(context, {"error": "CREATE_PROJECT_SHARED_SECRET is not configured"}, 401)
+            self._write_json(context, {"error": "GISQUICK_PROJECT_FROM_FILE_SHARED_SECRET is not configured"}, 401)
             return
         if not hmac.compare_digest(token, expected):
             self._write_json(context, {"error": "Invalid auth token"}, 401)
@@ -230,7 +230,7 @@ class CreateProjectHandler(QgsServerOgcApiHandler):
 
             layer = None
             if kind == "vector":
-                CreateProjectHandler._normalize_geojson_if_feature_array(full_path)
+                GisquickProjectFromFileHandler._normalize_geojson_if_feature_array(full_path)
                 layer = QgsVectorLayer(str(full_path), name, "ogr")
                 if not layer.isValid():
                     layer = None

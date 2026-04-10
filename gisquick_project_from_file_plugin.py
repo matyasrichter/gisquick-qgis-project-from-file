@@ -3,13 +3,13 @@ from __future__ import annotations
 from qgis.core import Qgis, QgsMessageLog
 from qgis.server import QgsServerOgcApi
 
-from .create_project_handler import CreateProjectHandler
+from .gisquick_project_from_file_handler import GisquickProjectFromFileHandler
 
 
-class CreateProjectServerPlugin:
-    API_NAME = "create-project"
+class GisquickProjectFromFileServerPlugin:
+    API_NAME = "gisquick-project-from-file"
     API_VERSION = "1.0"
-    API_ROOT = "/create-project"
+    API_ROOT = "/gisquick-project-from-file"
 
     def __init__(self, server_iface):
         self._server_iface = server_iface
@@ -20,10 +20,10 @@ class CreateProjectServerPlugin:
         if QgsMessageLog is None:
             return
         if Qgis is None:
-            QgsMessageLog.logMessage(message, "CreateProject")
+            QgsMessageLog.logMessage(message, "GisquickProjectFromFile")
             return
         level = Qgis.Warning if is_warning else Qgis.Info
-        QgsMessageLog.logMessage(message, "CreateProject", level=level)
+        QgsMessageLog.logMessage(message, "GisquickProjectFromFile", level=level)
 
     def _register_api(self) -> None:
         if QgsServerOgcApi is None:
@@ -33,17 +33,17 @@ class CreateProjectServerPlugin:
             self._server_iface,
             self.API_ROOT,
             self.API_NAME,
-            "Create QGIS project from pre-downloaded job files",
+            "Gisquick - Create QGIS project from pre-downloaded job files",
             self.API_VERSION,
         )
-        api.registerHandler(CreateProjectHandler())
+        api.registerHandler(GisquickProjectFromFileHandler())
         self._server_iface.serviceRegistry().registerApi(api)
         self._api = api
-        self._log("Create project API registered")
+        self._log("Gisquick project-from-file API registered")
 
     def unload(self) -> None:
         if self._api is None:
             return
         self._server_iface.serviceRegistry().unregisterApi(self.API_NAME, self.API_VERSION)
         self._api = None
-        self._log("Create project API unregistered")
+        self._log("Gisquick project-from-file API unregistered")

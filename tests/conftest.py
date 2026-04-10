@@ -1,4 +1,4 @@
-"""pytest configuration for create_project tests.
+"""pytest configuration for gisquick_project_from_file tests.
 
 Requires pytest-qgis and a QGIS installation accessible to Python
 (e.g. via `uv venv --system-site-packages` or equivalent).
@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-# Make the plugin package importable as `create_project.*`
+# Make the plugin package importable as `gisquick_project_from_file.*`
 _plugins_dir = str(Path(__file__).resolve().parents[2])
 if _plugins_dir not in sys.path:
     sys.path.insert(0, _plugins_dir)

@@ -1,4 +1,4 @@
-IMAGE_NAME := create-project-tests
+IMAGE_NAME := gisquick-project-from-file-tests
 PLUGIN_DIR := $(shell pwd)
 
 .PHONY: build test clean
@@ -8,8 +8,8 @@ build:
 
 test: build
 	docker run --rm \
-		-v "$(PLUGIN_DIR):/plugins/create_project" \
-		-w /plugins/create_project \
+		-v "$(PLUGIN_DIR):/plugins/gisquick_project_from_file" \
+		-w /plugins/gisquick_project_from_file \
 		-e QT_QPA_PLATFORM=offscreen \
 		-e PYTHONPATH=/plugins \
 		$(IMAGE_NAME) \
