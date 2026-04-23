@@ -169,11 +169,15 @@ class GisquickProjectFromFileHandler(QgsServerOgcApiHandler):
             return
 
         # Build and save project
-        from qgis.core import QgsProject
+        from qgis.core import QgsProject, QgsVectorLayer
 
         project = QgsProject()
         for layer in layers:
             project.addMapLayer(layer)
+
+        vector_ids = [layer.id() for layer in layers if isinstance(layer, QgsVectorLayer)]
+        if vector_ids:
+            project.writeEntry("WFSLayers", "/", vector_ids)
 
         project_path = job_dir / "results.qgs"
         if not project.write(str(project_path)):

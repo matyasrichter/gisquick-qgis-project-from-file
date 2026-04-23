@@ -605,6 +605,32 @@ class TestHandleRequest:
         project_xml = (tmp_path / "results.qgs").read_text(encoding="utf-8")
         assert "track" in project_xml
 
+    def test_200_vector_layer_registered_for_wfs(self, tmp_path):
+        (tmp_path / "track.geojson").write_text(LINESTRING_GEOJSON, encoding="utf-8")
+        handler = _make_handler()
+        body = json.dumps(
+            {"job_dir": str(tmp_path), "files": [{"path": "track.geojson"}]}
+        ).encode()
+        ctx = _make_context(auth_header=f"Token {SECRET}", body=body)
+
+        handler.handleRequest(ctx)
+
+        project_xml = (tmp_path / "results.qgs").read_text(encoding="utf-8")
+        assert "WFSLayers" in project_xml
+
+    def test_200_raster_only_has_no_wfs_layers_entry(self, tmp_path):
+        _write_minimal_png(tmp_path / "image.png")
+        handler = _make_handler()
+        body = json.dumps(
+            {"job_dir": str(tmp_path), "files": [{"path": "image.png"}]}
+        ).encode()
+        ctx = _make_context(auth_header=f"Token {SECRET}", body=body)
+
+        handler.handleRequest(ctx)
+
+        project_xml = (tmp_path / "results.qgs").read_text(encoding="utf-8")
+        assert "WFSLayers" not in project_xml
+
     def test_200_raster_and_vector_both_saved(self, tmp_path):
         (tmp_path / "track.geojson").write_text(LINESTRING_GEOJSON, encoding="utf-8")
         _write_minimal_png(tmp_path / "image.png")
