@@ -631,6 +631,32 @@ class TestHandleRequest:
         project_xml = (tmp_path / "results.qgs").read_text(encoding="utf-8")
         assert "WFSLayers" not in project_xml
 
+    def test_200_geometry_fixes_applied_on_load(self, tmp_path):
+        """A CW-exterior polygon must be normalised to CCW and persisted in the saved file."""
+        # CW ring: shoelace area = –1.0
+        cw_polygon = json.dumps({
+            "type": "Polygon",
+            "coordinates": [[[0, 0], [0, 1], [1, 1], [1, 0], [0, 0]]],
+        })
+        (tmp_path / "area.geojson").write_text(cw_polygon, encoding="utf-8")
+        handler = _make_handler()
+        body = json.dumps(
+            {"job_dir": str(tmp_path), "files": [{"path": "area.geojson"}]}
+        ).encode()
+        ctx = _make_context(auth_header=f"Token {SECRET}", body=body)
+
+        handler.handleRequest(ctx)
+
+        assert _status(ctx) == 200
+        # Reload from the (now fixed) file and verify the ring is CCW.
+        from qgis.core import QgsVectorLayer
+        saved = QgsVectorLayer(str(tmp_path / "area.geojson"), "saved", "ogr")
+        assert saved.isValid()
+        feature = next(saved.getFeatures())
+        ring = feature.geometry().asPolygon()[0]
+        coords = [(pt.x(), pt.y()) for pt in ring]
+        assert _signed_area(coords) > 0, "exterior ring must be CCW after handleRequest fixes and saves it"
+
     def test_200_raster_and_vector_both_saved(self, tmp_path):
         (tmp_path / "track.geojson").write_text(LINESTRING_GEOJSON, encoding="utf-8")
         _write_minimal_png(tmp_path / "image.png")
@@ -649,3 +675,156 @@ class TestHandleRequest:
         project_xml = (tmp_path / "results.qgs").read_text(encoding="utf-8")
         assert "track" in project_xml
         assert "image" in project_xml
+
+
+# ---------------------------------------------------------------------------
+# _fix_vector_layer_geometries — geometry validation and repair
+# ---------------------------------------------------------------------------
+
+# Clockwise exterior ring — wrong for GeoJSON/OGC RHR (exterior should be CCW).
+# Shoelace signed area = –1.0 (negative → CW).
+CW_POLYGON_GEOJSON = json.dumps({
+    "type": "Polygon",
+    "coordinates": [[[0.0, 0.0], [0.0, 1.0], [1.0, 1.0], [1.0, 0.0], [0.0, 0.0]]],
+})
+
+# Counter-clockwise exterior ring — already correct for GeoJSON/OGC RHR.
+# Shoelace signed area = +1.0 (positive → CCW).
+CCW_POLYGON_GEOJSON = json.dumps({
+    "type": "Polygon",
+    "coordinates": [[[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0], [0.0, 0.0]]],
+})
+
+# Self-intersecting bowtie — GEOS-invalid; makeValid() decomposes it
+BOWTIE_POLYGON_GEOJSON = json.dumps({
+    "type": "Polygon",
+    "coordinates": [[[0.0, 0.0], [1.0, 1.0], [1.0, 0.0], [0.0, 1.0], [0.0, 0.0]]],
+})
+
+
+def _signed_area(coords) -> float:
+    """Shoelace signed area; positive = CCW, negative = CW."""
+    n = len(coords)
+    area = 0.0
+    for i in range(n - 1):
+        x1, y1 = coords[i]
+        x2, y2 = coords[i + 1]
+        area += (x1 * y2) - (x2 * y1)
+    return area / 2.0
+
+
+class TestFixVectorLayerGeometries:
+
+    def test_cw_polygon_exterior_ring_normalised_to_ccw(self, tmp_path):
+        """A polygon with a CW exterior ring must be corrected to CCW by forceRHR()."""
+        from qgis.core import QgsVectorLayer
+
+        path = tmp_path / "cw.geojson"
+        path.write_text(CW_POLYGON_GEOJSON, encoding="utf-8")
+        layer = QgsVectorLayer(str(path), "cw", "ogr")
+        assert layer.isValid()
+
+        GisquickProjectFromFileHandler._fix_vector_layer_geometries(layer)
+
+        feature = next(layer.getFeatures())
+        ring = feature.geometry().asPolygon()[0]
+        coords = [(pt.x(), pt.y()) for pt in ring]
+        assert _signed_area(coords) > 0, "exterior ring should be CCW (positive signed area) after fix"
+
+    def test_valid_ccw_polygon_not_modified(self, tmp_path):
+        """A polygon already in CCW orientation must not trigger an edit session."""
+        from qgis.core import QgsVectorLayer
+
+        path = tmp_path / "ccw.geojson"
+        path.write_text(CCW_POLYGON_GEOJSON, encoding="utf-8")
+        layer = QgsVectorLayer(str(path), "ccw", "ogr")
+        assert layer.isValid()
+
+        GisquickProjectFromFileHandler._fix_vector_layer_geometries(layer)
+
+        assert not layer.isModified()
+        # Ring must remain CCW — guards against silently converting to CW and committing.
+        ring = next(layer.getFeatures()).geometry().asPolygon()[0]
+        coords = [(pt.x(), pt.y()) for pt in ring]
+        assert _signed_area(coords) > 0, "CCW polygon must remain CCW after a no-op fix"
+
+    def test_self_intersecting_polygon_handled_gracefully(self, tmp_path):
+        """_fix_vector_layer_geometries must not crash on a GEOS-invalid polygon.
+
+        makeValid() is applied but the exact outcome depends on GEOS version and
+        whether the OGR layer accepts the repaired geometry type.  The critical
+        contract is that the method completes without raising and the layer
+        remains loadable with at least one feature.
+        """
+        from qgis.core import QgsVectorLayer
+
+        path = tmp_path / "bowtie.geojson"
+        path.write_text(BOWTIE_POLYGON_GEOJSON, encoding="utf-8")
+        layer = QgsVectorLayer(str(path), "bowtie", "ogr")
+        assert layer.isValid()
+
+        GisquickProjectFromFileHandler._fix_vector_layer_geometries(layer)
+
+        assert layer.isValid()
+        assert layer.featureCount() >= 1
+
+    def test_cw_ring_written_back_to_file(self, tmp_path):
+        """commitChanges() must persist the CCW-corrected ring to the backing OGR file."""
+        from qgis.core import QgsVectorLayer
+
+        path = tmp_path / "cw.geojson"
+        path.write_text(CW_POLYGON_GEOJSON, encoding="utf-8")
+        layer = QgsVectorLayer(str(path), "cw", "ogr")
+        assert layer.isValid()
+
+        GisquickProjectFromFileHandler._fix_vector_layer_geometries(layer)
+
+        # Open a brand-new layer handle to force a fresh read from the file.
+        layer2 = QgsVectorLayer(str(path), "cw2", "ogr")
+        assert layer2.isValid()
+        ring = next(layer2.getFeatures()).geometry().asPolygon()[0]
+        coords = [(pt.x(), pt.y()) for pt in ring]
+        assert _signed_area(coords) > 0, "fix must be persisted to disk: ring should be CCW on reload"
+
+    def test_polygon_with_ccw_hole_normalised_to_cw(self, tmp_path):
+        """A polygon whose hole ring is CCW (wrong per RFC 7946) must be corrected to CW."""
+        from qgis.core import QgsVectorLayer
+
+        # Exterior CCW (correct), hole CCW (wrong — RFC 7946 requires CW holes).
+        polygon_ccw_hole = json.dumps({
+            "type": "Polygon",
+            "coordinates": [
+                # exterior CCW: positive area
+                [[0.0, 0.0], [3.0, 0.0], [3.0, 3.0], [0.0, 3.0], [0.0, 0.0]],
+                # hole CCW (wrong): positive area — should become CW after fix
+                [[1.0, 1.0], [2.0, 1.0], [2.0, 2.0], [1.0, 2.0], [1.0, 1.0]],
+            ],
+        })
+        path = tmp_path / "holed.geojson"
+        path.write_text(polygon_ccw_hole, encoding="utf-8")
+        layer = QgsVectorLayer(str(path), "holed", "ogr")
+        assert layer.isValid()
+
+        GisquickProjectFromFileHandler._fix_vector_layer_geometries(layer)
+
+        feature = next(layer.getFeatures())
+        rings = feature.geometry().asPolygon()
+        assert len(rings) == 2, "polygon should still have one hole after fix"
+        hole_coords = [(pt.x(), pt.y()) for pt in rings[1]]
+        assert _signed_area(hole_coords) < 0, "hole ring must be CW (negative signed area) after fix"
+
+    def test_line_layer_not_modified_by_fix(self, tmp_path):
+        """forceRHR() is only for polygons; a LineString layer must remain unmodified."""
+        from qgis.core import QgsVectorLayer
+
+        path = tmp_path / "line.geojson"
+        path.write_text(
+            json.dumps({"type": "LineString", "coordinates": [[0, 0], [1, 1]]}),
+            encoding="utf-8",
+        )
+        layer = QgsVectorLayer(str(path), "line", "ogr")
+        assert layer.isValid()
+
+        GisquickProjectFromFileHandler._fix_vector_layer_geometries(layer)
+
+        assert not layer.isModified()
