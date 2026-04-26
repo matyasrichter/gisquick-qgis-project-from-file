@@ -10,6 +10,11 @@ from qgis.PyQt.QtCore import QRegularExpression
 from qgis.server import QgsServerOgcApi, QgsServerOgcApiHandler, QgsServerRequest
 
 from .config import load_config
+from .geometry import (
+    _fix_vector_layer_geometries,
+    _normalize_geojson_if_feature_array,
+    _orient_polygon_ccw,
+)
 
 _log = logging.getLogger(__name__)
 
@@ -38,17 +43,8 @@ def _media_kind(extension: str, mime_type: str) -> str:
 
 
 def _get_header(request: Any, name: str) -> str:
-    if hasattr(request, "header"):
-        value = request.header(name)
-        if value:
-            return str(value)
-    if hasattr(request, "headers"):
-        headers = request.headers()
-        if isinstance(headers, dict):
-            for key, value in headers.items():
-                if str(key).lower() == name.lower():
-                    return str(value)
-    return ""
+    value = request.header(name)
+    return str(value) if value else ""
 
 
 def _extract_bearer_token(request: Any) -> str:
@@ -56,6 +52,61 @@ def _extract_bearer_token(request: Any) -> str:
     if auth_header.lower().startswith("token "):
         return auth_header[6:].strip()
     return ""
+
+
+def _read_json_payload(request) -> Dict[str, Any]:
+    raw_data = request.data()
+    if raw_data is None:
+        raise ValueError("Request body is required")
+    data_bytes = bytes(raw_data)
+    if not data_bytes:
+        raise ValueError("Request body is empty")
+    try:
+        return json.loads(data_bytes.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("Request body must be valid JSON") from exc
+
+
+def _write_json(context, payload: Dict[str, Any], status_code: int) -> None:
+    response = context.response()
+    if response is None:
+        return
+    response.setStatusCode(int(status_code))
+    body = json.dumps(payload, ensure_ascii=False)
+    response.setResponseHeader("Content-Type", "application/json")
+    response.write(body)
+
+
+def _load_vector(full_path: Path, name: str):
+    from qgis.core import QgsVectorLayer
+
+    _normalize_geojson_if_feature_array(full_path)
+    layer = QgsVectorLayer(str(full_path), name, "ogr")
+    if not layer.isValid():
+        return None
+    _fix_vector_layer_geometries(layer)
+    return layer
+
+
+def _load_raster(full_path: Path, name: str):
+    from qgis.core import QgsRasterLayer
+
+    layer = QgsRasterLayer(str(full_path), name)
+    return layer if layer.isValid() else None
+
+
+def _load_unknown(full_path: Path, name: str):
+    layer = _load_vector(full_path, name)
+    if layer is not None:
+        return layer
+    return _load_raster(full_path, name)
+
+
+_LOADERS = {
+    "vector": _load_vector,
+    "raster": _load_raster,
+    "unknown": _load_unknown,
+}
 
 
 class GisquickProjectFromFileHandler(QgsServerOgcApiHandler):
@@ -126,51 +177,28 @@ class GisquickProjectFromFileHandler(QgsServerOgcApiHandler):
     def handleRequest(self, context):
         request = context.request()
         if request is None:
-            self._write_json(context, {"error": "Missing server request context"}, 500)
+            _write_json(context, {"error": "Missing server request context"}, 500)
             return
 
         if request.method() != QgsServerRequest.PostMethod:
-            self._write_json(context, {"error": "Only POST is supported"}, 405)
+            _write_json(context, {"error": "Only POST is supported"}, 405)
             return
 
-        # Auth
-        token = _extract_bearer_token(request)
-        if not token:
-            self._write_json(context, {"error": "Missing auth token"}, 401)
-            return
-        expected = self._config.shared_secret
-        if not expected:
-            self._write_json(context, {"error": "GISQUICK_PROJECT_FROM_FILE_SHARED_SECRET is not configured"}, 401)
-            return
-        if not hmac.compare_digest(token, expected):
-            self._write_json(context, {"error": "Invalid auth token"}, 401)
+        if err := self._authenticate(request):
+            _write_json(context, {"error": err}, 401)
             return
 
-        # Parse body
-        try:
-            payload = self._read_json_payload(request)
-        except ValueError as exc:
-            self._write_json(context, {"error": str(exc)}, 400)
+        payload, err = self._parse_payload(request)
+        if err:
+            _write_json(context, {"error": err}, 400)
             return
 
-        job_dir_str = payload.get("job_dir", "")
-        files = payload.get("files", [])
-        if not isinstance(job_dir_str, str) or not job_dir_str.strip():
-            self._write_json(context, {"error": "job_dir must be a non-empty string"}, 400)
-            return
-        if not isinstance(files, list) or not files:
-            self._write_json(context, {"error": "files must be a non-empty list"}, 400)
-            return
-
-        job_dir = Path("/publish") / Path(job_dir_str)
-
-        # Load layers
-        layers = self._load_layers(job_dir, files)
+        job_dir = Path("/publish") / Path(payload["job_dir"])
+        layers = self._load_layers(job_dir, payload["files"])
         if not layers:
-            self._write_json(context, {"error": f"No files could be loaded as QGIS layers. Tried files: [{', '.join(str(job_dir / f['path']) for f in files)}]"}, 422)
+            _write_json(context, {"error": f"No files could be loaded as QGIS layers. Tried files: [{', '.join(str(job_dir / f['path']) for f in payload['files'])}]"}, 422)
             return
 
-        # Build and save project
         from qgis.core import QgsProject, QgsVectorLayer
 
         project = QgsProject()
@@ -183,118 +211,39 @@ class GisquickProjectFromFileHandler(QgsServerOgcApiHandler):
 
         project_path = job_dir / "results.qgs"
         if not project.write(str(project_path)):
-            self._write_json(context, {"error": "Failed to write project file"}, 500)
+            _write_json(context, {"error": "Failed to write project file"}, 500)
             return
 
-        self._write_json(context, {"project_file": "results.qgs"}, 200)
+        _write_json(context, {"project_file": "results.qgs"}, 200)
 
-    @staticmethod
-    def _normalize_geojson_if_feature_array(path: Path) -> None:
-        """Rewrite path in-place as a FeatureCollection if it contains a bare Feature array.
+    def _authenticate(self, request) -> Optional[str]:
+        """Return None on success, or an error message on failure."""
+        token = _extract_bearer_token(request)
+        if not token:
+            return "Missing auth token"
+        expected = self._config.shared_secret
+        if not expected:
+            return "GISQUICK_PROJECT_FROM_FILE_SHARED_SECRET is not configured"
+        if not hmac.compare_digest(token, expected):
+            return "Invalid auth token"
+        return None
 
-        Some API responses return ``[Feature, ...]`` instead of the standard
-        ``{"type": "FeatureCollection", "features": [...]}`` wrapper.  OGR does
-        not recognise the bare-array format, so we normalise it before loading.
-        """
-        if path.suffix.lower() not in {".json", ".geojson"}:
-            return
+    def _parse_payload(self, request) -> Tuple[Dict, Optional[str]]:
+        """Return (payload, None) on success, or ({}, error_message) on failure."""
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            return
-        if not isinstance(data, list):
-            return
-        if not data or not isinstance(data[0], dict) or data[0].get("type") != "Feature":
-            return
-        path.write_text(
-            json.dumps({"type": "FeatureCollection", "features": data}, ensure_ascii=False),
-            encoding="utf-8",
-        )
-
-    @staticmethod
-    def _orient_polygon_ccw(geom):
-        """Return geom with exterior rings CCW and hole rings CW (RFC 7946).
-
-        Works with Polygon and MultiPolygon geometries.  Ring orientation is
-        determined by the shoelace signed-area formula; rings with the wrong
-        winding order are reversed.  The closing point (first == last) is
-        preserved correctly after reversal.
-        """
-        from qgis.core import QgsGeometry, QgsWkbTypes
-
-        def _signed_area(ring):
-            area = 0.0
-            for i in range(len(ring) - 1):
-                area += ring[i].x() * ring[i + 1].y() - ring[i + 1].x() * ring[i].y()
-            return area / 2.0
-
-        def _orient_rings(polygon):
-            result = []
-            for idx, ring in enumerate(polygon):
-                want_ccw = idx == 0  # exterior CCW; holes CW
-                if (_signed_area(ring) > 0) != want_ccw:
-                    ring = list(reversed(ring))
-                result.append(ring)
-            return result
-
-        if QgsWkbTypes.isMultiType(geom.wkbType()):
-            parts = geom.asMultiPolygon()
-            if not parts:
-                return geom
-            return QgsGeometry.fromMultiPolygonXY([_orient_rings(p) for p in parts])
-        else:
-            polygon = geom.asPolygon()
-            if not polygon:
-                return geom
-            return QgsGeometry.fromPolygonXY(_orient_rings(polygon))
-
-    @staticmethod
-    def _fix_vector_layer_geometries(layer) -> None:
-        """Validate and fix feature geometries in-place via an edit session.
-
-        For polygon layers, normalises ring orientation to RFC 7946 / WFS
-        GeoJSON convention (exterior CCW, holes CW) via _orient_polygon_ccw().
-        Any geometry that remains GEOS-invalid after that step is repaired with
-        makeValid().  Only opens an edit session when at least one geometry
-        actually needs changing.
-        """
-        from qgis.core import QgsGeometry, QgsWkbTypes
-
-        is_polygon_layer = layer.geometryType() == QgsWkbTypes.PolygonGeometry
-        fixes = {}
-
-        for feature in layer.getFeatures():
-            geom = feature.geometry()
-            if geom.isEmpty():
-                continue
-
-            new_geom = QgsGeometry(geom)
-
-            if is_polygon_layer:
-                new_geom = GisquickProjectFromFileHandler._orient_polygon_ccw(new_geom)
-
-            if not new_geom.isGeosValid():
-                valid = new_geom.makeValid()
-                if not valid.isEmpty():
-                    new_geom = valid
-
-            if new_geom.asWkb() != geom.asWkb():
-                fixes[feature.id()] = new_geom
-
-        if not fixes:
-            return
-
-        if layer.startEditing():
-            for fid, new_geom in fixes.items():
-                layer.changeGeometry(fid, new_geom)
-            layer.commitChanges()
-        else:
-            _log.warning("Could not start editing layer '%s' to fix geometries", layer.name())
+            payload = _read_json_payload(request)
+        except ValueError as exc:
+            return {}, str(exc)
+        job_dir_str = payload.get("job_dir", "")
+        files = payload.get("files", [])
+        if not isinstance(job_dir_str, str) or not job_dir_str.strip():
+            return {}, "job_dir must be a non-empty string"
+        if not isinstance(files, list) or not files:
+            return {}, "files must be a non-empty list"
+        return payload, None
 
     @staticmethod
     def _load_layers(job_dir: Path, files: List[Dict[str, Any]]) -> list:
-        from qgis.core import QgsRasterLayer, QgsVectorLayer
-
         loaded = []
         for entry in files:
             if not isinstance(entry, dict):
@@ -303,7 +252,6 @@ class GisquickProjectFromFileHandler(QgsServerOgcApiHandler):
             mime_type = entry.get("type", "") or ""
             if not isinstance(rel_path, str) or not rel_path:
                 continue
-            # Reject paths with separators or traversal
             if "/" in rel_path or "\\" in rel_path or ".." in rel_path:
                 continue
 
@@ -313,66 +261,21 @@ class GisquickProjectFromFileHandler(QgsServerOgcApiHandler):
 
             name = full_path.stem
             kind = _media_kind(full_path.suffix, mime_type)
-
-            layer = None
-            if kind == "vector":
-                GisquickProjectFromFileHandler._normalize_geojson_if_feature_array(full_path)
-                layer = QgsVectorLayer(str(full_path), name, "ogr")
-                if not layer.isValid():
-                    layer = None
-                else:
-                    GisquickProjectFromFileHandler._fix_vector_layer_geometries(layer)
-            elif kind == "raster":
-                layer = QgsRasterLayer(str(full_path), name)
-                if not layer.isValid():
-                    layer = None
-            else:
-                # Unknown extension: try vector then raster
-                candidate = QgsVectorLayer(str(full_path), name, "ogr")
-                if candidate.isValid():
-                    GisquickProjectFromFileHandler._fix_vector_layer_geometries(candidate)
-                    layer = candidate
-                else:
-                    candidate = QgsRasterLayer(str(full_path), name)
-                    if candidate.isValid():
-                        layer = candidate
-
+            layer = _LOADERS[kind](full_path, name)
             if layer is not None:
                 loaded.append(layer)
 
         return loaded
 
+    # Shims for test-facing static method calls on the class
     @staticmethod
-    def _read_json_payload(request) -> Dict[str, Any]:
-        raw_data = request.data()
-        if raw_data is None:
-            raise ValueError("Request body is required")
-        if hasattr(raw_data, "data"):
-            try:
-                data_bytes = bytes(raw_data)
-            except TypeError:
-                data_bytes = raw_data.data()
-        else:
-            try:
-                data_bytes = bytes(raw_data)
-            except TypeError:
-                data_bytes = str(raw_data).encode("utf-8")
-        if not data_bytes:
-            raise ValueError("Request body is empty")
-        try:
-            return json.loads(data_bytes.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-            raise ValueError("Request body must be valid JSON") from exc
+    def _fix_vector_layer_geometries(layer) -> None:
+        return _fix_vector_layer_geometries(layer)
 
     @staticmethod
-    def _write_json(context, payload: Dict[str, Any], status_code: int) -> None:
-        response = context.response()
-        if response is None:
-            return
-        response.setStatusCode(int(status_code))
-        body = json.dumps(payload, ensure_ascii=False)
-        if hasattr(response, "setHeader"):
-            response.setHeader("Content-Type", "application/json")
-        elif hasattr(response, "setResponseHeader"):
-            response.setResponseHeader("Content-Type", "application/json")
-        response.write(body)
+    def _orient_polygon_ccw(geom):
+        return _orient_polygon_ccw(geom)
+
+    @staticmethod
+    def _read_json_payload(request) -> Dict[str, Any]:
+        return _read_json_payload(request)

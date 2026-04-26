@@ -109,10 +109,6 @@ class TestGetHeader:
         req = _make_header_request({})
         assert _get_header(req, "Authorization") == ""
 
-    def test_dict_based_headers_fallback(self):
-        req = MagicMock(spec=[])  # no .header attribute
-        req.headers = lambda: {"content-type": "application/json"}
-        assert _get_header(req, "Content-Type") == "application/json"
 
 
 # ---------------------------------------------------------------------------
