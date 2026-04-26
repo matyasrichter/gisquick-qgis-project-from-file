@@ -73,7 +73,10 @@ def _write_json(context, payload: Dict[str, Any], status_code: int) -> None:
         return
     response.setStatusCode(int(status_code))
     body = json.dumps(payload, ensure_ascii=False)
-    response.setResponseHeader("Content-Type", "application/json")
+    if hasattr(response, "setHeader"):
+        response.setHeader("Content-Type", "application/json")
+    else:
+        response.setResponseHeader("Content-Type", "application/json")
     response.write(body)
 
 
