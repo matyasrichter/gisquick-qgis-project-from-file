@@ -4,7 +4,7 @@ import hmac
 import json
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Literal, Optional, Tuple
 
 from qgis.PyQt.QtCore import QRegularExpression
 from qgis.server import QgsServerOgcApi, QgsServerOgcApiHandler, QgsServerRequest
@@ -27,7 +27,7 @@ _VECTOR_MIME = {
 }
 
 
-def _media_kind(extension: str, mime_type: str) -> str:
+def _media_kind(extension: str, mime_type: str) -> Literal["vector", "raster", "unknown"]:
     """Return 'vector', 'raster', or 'unknown'."""
     ext = extension.lower()
     if ext in _VECTOR_EXTENSIONS:
