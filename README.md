@@ -1,4 +1,4 @@
-# gisquick_qgis_server_processing QGIS Server Plugin
+# Giqcuisk QGIS Server Plugin for processing results
 
 ## Running tests
 
