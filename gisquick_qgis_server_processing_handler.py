@@ -112,17 +112,17 @@ _LOADERS = {
 }
 
 
-class GisquickProjectFromFileHandler(QgsServerOgcApiHandler):
+class GisquickQgisServerProcessingHandler(QgsServerOgcApiHandler):
 
     def __init__(self):
         super().__init__()
         self._config = load_config()
 
     def path(self):
-        return QRegularExpression(r"^(?:/gisquick-project-from-file)?/?$")
+        return QRegularExpression(r"^(?:/gisquick-qgis-server-processing)?/?$")
 
     def operationId(self):
-        return "gisquickProjectFromFile"
+        return "gisquickQgisServerProcessing"
 
     def summary(self):
         return "Gisquick - Create a QGIS project from pre-downloaded job files"
@@ -226,7 +226,7 @@ class GisquickProjectFromFileHandler(QgsServerOgcApiHandler):
             return "Missing auth token"
         expected = self._config.shared_secret
         if not expected:
-            return "GISQUICK_PROJECT_FROM_FILE_SHARED_SECRET is not configured"
+            return "GISQUICK_QGIS_SERVER_PROCESSING_SHARED_SECRET is not configured"
         if not hmac.compare_digest(token, expected):
             return "Invalid auth token"
         return None

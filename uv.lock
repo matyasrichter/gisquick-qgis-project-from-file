@@ -12,7 +12,7 @@ wheels = [
 ]
 
 [[package]]
-name = "gisquick-project-from-file"
+name = "gisquick-qgis-server-processing"
 version = "0.1.0"
 source = { virtual = "." }
 

@@ -1,5 +1,5 @@
 [general]
-name=Gisquick - Project from file
+name=Gisquick - QGIS Server processing
 description=QGIS Server plugin: Gisquick - creates a QGIS project from pre-downloaded job files
 version=0.1.0
 qgisMinimumVersion=3.28

@@ -1,5 +1,5 @@
 def main():
-    print("Hello from gisquick-project-from-file!")
+    print("Hello from gisquick-qgis-server-processing!")
 
 
 if __name__ == "__main__":

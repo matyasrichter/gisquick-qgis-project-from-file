@@ -1,4 +1,4 @@
-# gisquick_project_from_file QGIS Server Plugin
+# gisquick_qgis_server_processing QGIS Server Plugin
 
 ## Running tests
 

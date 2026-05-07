@@ -1,8 +1,8 @@
-"""QGIS server entrypoint for the gisquick_project_from_file plugin."""
+"""QGIS server entrypoint for the gisquick_qgis_server_processing plugin."""
 
 
 def serverClassFactory(server_iface):
     """Create the server plugin instance."""
-    from .gisquick_project_from_file_plugin import GisquickProjectFromFileServerPlugin
+    from .gisquick_qgis_server_processing_plugin import GisquickQgisServerProcessingServerPlugin
 
-    return GisquickProjectFromFileServerPlugin(server_iface)
+    return GisquickQgisServerProcessingServerPlugin(server_iface)
