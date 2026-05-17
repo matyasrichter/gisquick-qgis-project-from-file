@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Literal, Optional, Tuple
 from qgis.PyQt.QtCore import QRegularExpression
 from qgis.server import QgsServerOgcApi, QgsServerOgcApiHandler, QgsServerRequest
 
+from .archives import archive_stem, extract_archive, is_archive, scan_spatial_files
 from .config import load_config
 from .geometry import (
     _fix_vector_layer_geometries,
@@ -262,11 +263,21 @@ class GisquickQgisServerProcessingHandler(QgsServerOgcApiHandler):
             if not full_path.is_file():
                 continue
 
-            name = full_path.stem
-            kind = _media_kind(full_path.suffix, mime_type)
-            layer = _LOADERS[kind](full_path, name)
-            if layer is not None:
-                loaded.append(layer)
+            if is_archive(rel_path):
+                dest = job_dir / archive_stem(rel_path)
+                try:
+                    extract_archive(full_path, dest)
+                except Exception:
+                    _log.warning("Failed to extract archive %s", rel_path, exc_info=True)
+                    continue
+                for f in scan_spatial_files(dest, _VECTOR_EXTENSIONS | _RASTER_EXTENSIONS):
+                    layer = _LOADERS[_media_kind(f.suffix, "")](f, f.stem)
+                    if layer is not None:
+                        loaded.append(layer)
+            else:
+                layer = _LOADERS[_media_kind(full_path.suffix, mime_type)](full_path, full_path.stem)
+                if layer is not None:
+                    loaded.append(layer)
 
         return loaded
 

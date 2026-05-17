@@ -8,9 +8,12 @@ those belong to QGIS Server and cannot be constructed in isolation.
 """
 from __future__ import annotations
 
+import io
 import json
 import os
 import struct
+import tarfile
+import zipfile
 import zlib
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -675,6 +678,164 @@ class TestHandleRequest:
         project_xml = (tmp_path / "results.qgs").read_text(encoding="utf-8")
         assert "track" in project_xml
         assert "image" in project_xml
+
+
+# ---------------------------------------------------------------------------
+# Archive helpers shared by TestLoadLayersArchive and TestHandleRequestArchive
+# ---------------------------------------------------------------------------
+
+def _make_zip(path: Path, members: dict) -> None:
+    with zipfile.ZipFile(path, "w") as zf:
+        for name, data in members.items():
+            zf.writestr(name, data if isinstance(data, bytes) else data)
+
+
+def _make_tar_gz(path: Path, members: dict) -> None:
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tf:
+        for name, data in members.items():
+            content = data if isinstance(data, bytes) else data.encode()
+            info = tarfile.TarInfo(name=name)
+            info.size = len(content)
+            tf.addfile(info, io.BytesIO(content))
+    path.write_bytes(buf.getvalue())
+
+
+# ---------------------------------------------------------------------------
+# _load_layers — archive expansion
+# ---------------------------------------------------------------------------
+
+class TestLoadLayersArchive:
+
+    def test_zip_with_geojson_loads_vector_layer(self, tmp_path):
+        _make_zip(tmp_path / "data.zip", {"track.geojson": LINESTRING_GEOJSON})
+
+        layers = GisquickQgisServerProcessingHandler._load_layers(
+            tmp_path, [{"path": "data.zip"}]
+        )
+
+        assert len(layers) == 1
+        assert layers[0].isValid()
+
+    def test_tar_gz_with_geojson_loads_vector_layer(self, tmp_path):
+        _make_tar_gz(tmp_path / "data.tar.gz", {"track.geojson": LINESTRING_GEOJSON})
+
+        layers = GisquickQgisServerProcessingHandler._load_layers(
+            tmp_path, [{"path": "data.tar.gz"}]
+        )
+
+        assert len(layers) == 1
+        assert layers[0].isValid()
+
+    def test_zip_with_two_spatial_files_loads_two_layers(self, tmp_path):
+        png_path = tmp_path / "_tmp.png"
+        _write_minimal_png(png_path)
+        png_bytes = png_path.read_bytes()
+
+        _make_zip(
+            tmp_path / "multi.zip",
+            {"track.geojson": LINESTRING_GEOJSON, "image.png": png_bytes},
+        )
+
+        layers = GisquickQgisServerProcessingHandler._load_layers(
+            tmp_path, [{"path": "multi.zip"}]
+        )
+
+        assert len(layers) == 2
+        assert all(layer.isValid() for layer in layers)
+
+    def test_zip_with_no_spatial_files_yields_no_layers(self, tmp_path):
+        _make_zip(tmp_path / "empty.zip", {"readme.txt": b"nothing here"})
+
+        layers = GisquickQgisServerProcessingHandler._load_layers(
+            tmp_path, [{"path": "empty.zip"}]
+        )
+
+        assert layers == []
+
+    def test_corrupt_zip_skipped_gracefully(self, tmp_path):
+        (tmp_path / "bad.zip").write_bytes(b"not a zip")
+
+        layers = GisquickQgisServerProcessingHandler._load_layers(
+            tmp_path, [{"path": "bad.zip"}]
+        )
+
+        assert layers == []
+
+    def test_zip_sidecar_files_not_loaded_as_separate_layers(self, tmp_path):
+        """Only .shp triggers a load — .dbf, .shx, .prj are not in the spatial extensions."""
+        _make_zip(
+            tmp_path / "bundle.zip",
+            {
+                "data.dbf": b"\x03",
+                "data.shx": b"\x00",
+                "data.prj": b"GEOGCS[]",
+                "point.geojson": POINT_GEOJSON,
+            },
+        )
+
+        layers = GisquickQgisServerProcessingHandler._load_layers(
+            tmp_path, [{"path": "bundle.zip"}]
+        )
+
+        assert len(layers) == 1
+        assert layers[0].isValid()
+
+    def test_archive_mixed_with_plain_file(self, tmp_path):
+        _make_zip(tmp_path / "data.zip", {"track.geojson": LINESTRING_GEOJSON})
+        _write_minimal_png(tmp_path / "image.png")
+
+        layers = GisquickQgisServerProcessingHandler._load_layers(
+            tmp_path,
+            [{"path": "data.zip"}, {"path": "image.png"}],
+        )
+
+        assert len(layers) == 2
+        assert all(layer.isValid() for layer in layers)
+
+
+# ---------------------------------------------------------------------------
+# handleRequest — archive end-to-end
+# ---------------------------------------------------------------------------
+
+class TestHandleRequestArchive:
+
+    def test_200_zip_with_geojson(self, tmp_path):
+        _make_zip(tmp_path / "out.zip", {"track.geojson": LINESTRING_GEOJSON})
+        handler = _make_handler()
+        body = json.dumps(
+            {"job_dir": str(tmp_path), "files": [{"path": "out.zip"}]}
+        ).encode()
+        ctx = _make_context(auth_header=f"Token {SECRET}", body=body)
+
+        handler.handleRequest(ctx)
+
+        assert _status(ctx) == 200
+        assert (tmp_path / "results.qgs").exists()
+
+    def test_422_zip_with_no_spatial_files(self, tmp_path):
+        _make_zip(tmp_path / "empty.zip", {"readme.txt": b"nothing"})
+        handler = _make_handler()
+        body = json.dumps(
+            {"job_dir": str(tmp_path), "files": [{"path": "empty.zip"}]}
+        ).encode()
+        ctx = _make_context(auth_header=f"Token {SECRET}", body=body)
+
+        handler.handleRequest(ctx)
+
+        assert _status(ctx) == 422
+
+    def test_422_corrupt_zip_only_file(self, tmp_path):
+        (tmp_path / "bad.zip").write_bytes(b"not a zip")
+        handler = _make_handler()
+        body = json.dumps(
+            {"job_dir": str(tmp_path), "files": [{"path": "bad.zip"}]}
+        ).encode()
+        ctx = _make_context(auth_header=f"Token {SECRET}", body=body)
+
+        handler.handleRequest(ctx)
+
+        assert _status(ctx) == 422
 
 
 # ---------------------------------------------------------------------------

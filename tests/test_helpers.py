@@ -5,12 +5,22 @@ with plain pytest and standard library mocks only.
 """
 from __future__ import annotations
 
+import io
 import json
 import os
+import tarfile
+import zipfile
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
+from gisquick_qgis_server_processing.archives import (
+    archive_stem,
+    extract_archive,
+    is_archive,
+    scan_spatial_files,
+)
 from gisquick_qgis_server_processing.config import GisquickQgisServerProcessingConfig, load_config
 from gisquick_qgis_server_processing.gisquick_qgis_server_processing_handler import (
     GisquickQgisServerProcessingHandler,
@@ -197,3 +207,172 @@ class TestReadJsonPayload:
             self._req(json.dumps(payload).encode("utf-8"))
         )
         assert result["name"] == "\u00e9l\u00e8ve"
+
+
+# ---------------------------------------------------------------------------
+# archives \u2014 is_archive
+# ---------------------------------------------------------------------------
+
+class TestIsArchive:
+
+    @pytest.mark.parametrize("name", [
+        "data.zip", "DATA.ZIP", "results.tar", "output.tgz",
+        "output.tbz2", "output.txz", "results.tar.gz",
+        "results.tar.bz2", "results.tar.xz",
+    ])
+    def test_archive_extensions_recognised(self, name):
+        assert is_archive(name) is True
+
+    @pytest.mark.parametrize("name", [
+        "data.gpkg", "track.geojson", "image.png", "notes.txt", "data.gz",
+    ])
+    def test_non_archive_extensions_not_recognised(self, name):
+        assert is_archive(name) is False
+
+
+# ---------------------------------------------------------------------------
+# archives \u2014 archive_stem
+# ---------------------------------------------------------------------------
+
+class TestArchiveStem:
+
+    @pytest.mark.parametrize("name,expected", [
+        ("results.zip", "results"),
+        ("results.tar", "results"),
+        ("results.tgz", "results"),
+        ("results.tbz2", "results"),
+        ("results.txz", "results"),
+        ("results.tar.gz", "results"),
+        ("results.tar.bz2", "results"),
+        ("results.tar.xz", "results"),
+        ("my.results.zip", "my.results"),
+        ("my.results.tar.gz", "my.results"),
+    ])
+    def test_stem_stripped_correctly(self, name, expected):
+        assert archive_stem(name) == expected
+
+
+# ---------------------------------------------------------------------------
+# archives \u2014 extract_archive
+# ---------------------------------------------------------------------------
+
+def _make_zip(path: Path, members: dict[str, bytes]) -> None:
+    """Write a zip file containing the given {member_name: content} dict."""
+    with zipfile.ZipFile(path, "w") as zf:
+        for name, data in members.items():
+            zf.writestr(name, data)
+
+
+def _make_tar_gz(path: Path, members: dict[str, bytes]) -> None:
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tf:
+        for name, data in members.items():
+            info = tarfile.TarInfo(name=name)
+            info.size = len(data)
+            tf.addfile(info, io.BytesIO(data))
+    path.write_bytes(buf.getvalue())
+
+
+class TestExtractArchive:
+
+    def test_zip_extracts_single_file(self, tmp_path):
+        archive = tmp_path / "data.zip"
+        _make_zip(archive, {"data.geojson": b'{"type":"Point","coordinates":[0,0]}'})
+        dest = tmp_path / "data"
+
+        extract_archive(archive, dest)
+
+        assert (dest / "data.geojson").is_file()
+
+    def test_tar_gz_extracts_single_file(self, tmp_path):
+        archive = tmp_path / "data.tar.gz"
+        _make_tar_gz(archive, {"track.geojson": b'{"type":"Point","coordinates":[1,2]}'})
+        dest = tmp_path / "data"
+
+        extract_archive(archive, dest)
+
+        assert (dest / "track.geojson").is_file()
+
+    def test_zip_slip_raises_before_extracting(self, tmp_path):
+        archive = tmp_path / "evil.zip"
+        _make_zip(archive, {"../../evil.txt": b"bad"})
+        dest = tmp_path / "dest"
+
+        with pytest.raises(ValueError, match="ZIP slip"):
+            extract_archive(archive, dest)
+
+        assert not (tmp_path.parent / "evil.txt").exists()
+
+    def test_tar_slip_raises_before_extracting(self, tmp_path):
+        archive = tmp_path / "evil.tar.gz"
+        _make_tar_gz(archive, {"../../evil.txt": b"bad"})
+        dest = tmp_path / "dest"
+
+        with pytest.raises(ValueError, match="ZIP slip"):
+            extract_archive(archive, dest)
+
+    def test_dest_dir_created_if_absent(self, tmp_path):
+        archive = tmp_path / "data.zip"
+        _make_zip(archive, {"f.txt": b"hello"})
+        dest = tmp_path / "new" / "subdir"
+
+        extract_archive(archive, dest)
+
+        assert dest.is_dir()
+
+    def test_corrupt_zip_raises(self, tmp_path):
+        archive = tmp_path / "corrupt.zip"
+        archive.write_bytes(b"not a zip file at all")
+        dest = tmp_path / "dest"
+
+        with pytest.raises(Exception):
+            extract_archive(archive, dest)
+
+
+# ---------------------------------------------------------------------------
+# archives \u2014 scan_spatial_files
+# ---------------------------------------------------------------------------
+
+class TestScanSpatialFiles:
+
+    SPATIAL_EXTENSIONS = frozenset({".gpkg", ".geojson", ".shp", ".tif", ".png"})
+
+    def test_finds_spatial_files(self, tmp_path):
+        (tmp_path / "data.gpkg").write_bytes(b"")
+        (tmp_path / "track.geojson").write_bytes(b"")
+        (tmp_path / "image.tif").write_bytes(b"")
+
+        result = scan_spatial_files(tmp_path, self.SPATIAL_EXTENSIONS)
+
+        names = {f.name for f in result}
+        assert names == {"data.gpkg", "track.geojson", "image.tif"}
+
+    def test_ignores_non_spatial_files(self, tmp_path):
+        (tmp_path / "data.dbf").write_bytes(b"")
+        (tmp_path / "data.shx").write_bytes(b"")
+        (tmp_path / "notes.txt").write_bytes(b"")
+        (tmp_path / "data.shp").write_bytes(b"")
+
+        result = scan_spatial_files(tmp_path, self.SPATIAL_EXTENSIONS)
+
+        assert [f.name for f in result] == ["data.shp"]
+
+    def test_recurses_into_subdirectories(self, tmp_path):
+        sub = tmp_path / "sub"
+        sub.mkdir()
+        (sub / "nested.geojson").write_bytes(b"")
+
+        result = scan_spatial_files(tmp_path, self.SPATIAL_EXTENSIONS)
+
+        assert len(result) == 1
+        assert result[0].name == "nested.geojson"
+
+    def test_extension_check_is_case_insensitive(self, tmp_path):
+        (tmp_path / "DATA.GEOJSON").write_bytes(b"")
+
+        result = scan_spatial_files(tmp_path, self.SPATIAL_EXTENSIONS)
+
+        assert len(result) == 1
+
+    def test_empty_directory_returns_empty_list(self, tmp_path):
+        assert scan_spatial_files(tmp_path, self.SPATIAL_EXTENSIONS) == []
